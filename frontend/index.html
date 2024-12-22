@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Alegreya+Sans:ital,wght@0,100;0,300;0,400;0,500;0,700;0,800;0,900;1,100;1,300;1,400;1,500;1,700;1,800;1,900&family=Metal+Mania&family=Roboto+Condensed:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet">
+    <title>SWAG GAME</title>
+    <style>
+        /* Ваши существующие стили */
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+            background: #f0f0f0; /* Добавлен фон для видимости */
+        }
+        #gameOverScreen {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: black;
+            z-index: 100;
+            opacity: 0;
+            transition: opacity 1s ease-in-out;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            text-align: center;
+        }
+
+        #gameOverScreen.show {
+            opacity: 1;
+            background: rgba(0, 0, 0, 0.8);
+        }
+
+        #gameOverScreen h1 {
+            font-size: 8vw;
+            color: red;
+            position: absolute;
+            opacity: 0;
+            top: 50%;
+            left: 50%;
+            font-family: "Metal Mania", system-ui;
+            font-weight: 400;
+            font-style: normal;
+            z-index: 1;
+            transform: translateX(-50%) translateY(-100%);
+            animation: fadeInText 5s ease;
+        }
+
+        #gameOverScreen button {
+            font-family: "Metal Mania", system-ui;
+            font-weight: 400;
+            font-style: normal;
+            background: transparent;
+            color: #ff0000;
+            position: relative;
+            z-index: 10;
+            text-transform: uppercase;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 3vw;
+            border: 0;
+            animation: fadeInButton 10s ease;
+        }
+
+        @keyframes fadeInText {
+            0% {
+                opacity: 0;
+                font-size: 4vw;
+            }
+            50% {
+                opacity: 1;
+                font-size: 8vw;
+            }
+            100% {
+                opacity: 0;
+                font-size: 8vw;
+            }
+
+        }
+
+        @keyframes fadeInButton {
+            0% {
+                opacity: 0;
+            }
+            50% {
+                opacity: 0;
+            }
+            75% {
+                opacity: 1;
+            }
+            100% {
+                opacity: 1;
+            }
+        }
+
+        #nicknameScreen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            z-index: 1000; /* Добавлено для приоритета отображения */
+        }
+
+        #leaderboard, #stats {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+        }
+
+        #leaderboard {
+            top: 10px;
+            right: 10px;
+        }
+
+        #stats {
+            top: 10px;
+            left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="nicknameScreen">
+        <h1>Введите ваш никнейм</h1>
+        <input type="text" id="nicknameInput" placeholder="Ваш ник">
+        <button id="startButton">Начать</button>
+    </div>
+    <div id="gameOverScreen">
+        <h1>YOU DIED</h1>
+        <button id="restartButton">RESPAWN</button>
+        <audio id="soundGameOver" src="./assets/audio/gameOver.mp3"></audio>
+    </div>
+    <audio id="shotSpeed" src="./assets/audio/shot1.mp3"></audio>
+    <audio id="shotSlow" src="./assets/audio/shot2.mp3"></audio>
+    <audio id="soundKilled" src="./assets/audio/killed.mp3"></audio>
+
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <script>
+        const socket = io('http://backend.swag-game.ru:3100'); // Укажите адрес сервера с портом
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Установим размеры холста
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        const MAP_SIZE = 5000;
+        const PLAYER_RADIUS = 20;
+        const BULLET_RADIUS = 5;
+        const BULLET_SPEED = 5;
+        const PLAYER_SPEED = 2; // Фиксированная скорость движения
+        const BULLET_LIFETIME = 300; // Время жизни пули в тиках
+        let playerId = null;
+        let players = {};
+        let bullets = [];
+        let camera = { x: 0, y: 0 };
+        let mousePosition = { x: canvas.width / 2, y: canvas.height / 2 };
+        let isGameOver = false;
+        let isCursorOverPlayer = false; // Флаг для проверки, над ли курсором игрок
+
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const restartButton = document.getElementById('restartButton');
+
+        // Перезапуск игры
+        restartButton.addEventListener('click', () => {
+            socket.emit('restart');
+            gameOverScreen.style.display = 'none';
+            isGameOver = false;
+        });
+
+        // Получаем ID игрока при подключении
+        socket.on('init', (data) => {
+            playerId = data.id;
+            console.log('Connected as player', playerId);
+            // Дополнительная инициализация будет выполнена после получения обновления сервера
+        });
+
+        const nicknameScreen = document.getElementById('nicknameScreen');
+        const nicknameInput = document.getElementById('nicknameInput');
+        const startButton = document.getElementById('startButton');
+        const leaderboardDiv = document.createElement('div');
+        const statsDiv = document.createElement('div');
+
+        leaderboardDiv.id = 'leaderboard';
+        statsDiv.id = 'stats';
+
+        document.body.appendChild(leaderboardDiv);
+        document.body.appendChild(statsDiv);
+
+        // Логика отправки никнейма и старта игры
+        startButton.addEventListener('click', () => {
+            const nickname = nicknameInput.value.trim() || 'Player';
+            socket.emit('startGame', nickname);
+            nicknameScreen.style.display = 'none';
+        });
+
+        let pingStartTime;
+        let currentPing = 0;
+
+        // Отправляем запрос на пинг
+        function sendPing() {
+            pingStartTime = Date.now(); // Сохраняем время отправки
+            socket.emit('ping');       // Отправляем запрос
+        }
+
+        // Получаем ответ "pong" от сервера
+        socket.on('pong', () => {
+            const now = Date.now();
+            currentPing = now - pingStartTime; // Вычисляем задержку
+            console.log(`Ping: ${currentPing} ms`);
+        });
+
+        // Автоматическое измерение пинга каждые 5 секунд
+        setInterval(sendPing, 5000);
+
+        // Отображение таблицы лидеров
+        function updateLeaderboard(leaderboard) {
+            leaderboardDiv.innerHTML = '<h3>Таблица лидеров</h3>';
+            leaderboard.forEach((player, index) => {
+                leaderboardDiv.innerHTML += 
+                    `<p>${index + 1}. ${player.nickname} - Убийства: ${player.kills}</p>`;
+            });
+        }
+
+        // Функция для отрисовки игроков
+        function drawPlayers() {
+            for (const id in players) {
+                const player = players[id];
+
+                // Пропускаем "мертвых" игроков
+                if (!player || !player.alive) continue;
+
+                // Интегрируем интерполяцию для плавного движения
+                const relativeX = (player.renderX !== undefined ? player.renderX : player.x) - camera.x;
+                const relativeY = (player.renderY !== undefined ? player.renderY : player.y) - camera.y;
+
+                ctx.beginPath();
+                ctx.arc(relativeX, relativeY, PLAYER_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = id === playerId ? 'blue' : 'red';
+                ctx.fill();
+                ctx.save();
+
+                // Отображение ника над игроком
+                ctx.font = '16px Arial';
+                ctx.fillStyle = '#708090';
+                ctx.textAlign = 'center';
+                // ctx.shadowColor = 'rgba(119, 136, 153, 0.8)';
+                // ctx.shadowOffsetX = 3;
+                // ctx.shadowOffsetY = 3;
+                // ctx.shadowBlur = 6;
+                ctx.fillText(player.nickname, relativeX, relativeY - PLAYER_RADIUS - 10);
+
+                ctx.restore();
+            }
+        }
+
+        // Функция для обновления статистики игрока
+        function updateStats(player) {
+            if (!player) return;  // Если игрок не существует, не обновляем статистику
+            statsDiv.innerHTML = 
+                `<h3>Статистика</h3>
+                <p>Убийства: ${player.kills}</p>`;
+        }
+
+        // Обработка события убийства
+        socket.on('playerKilled', () => {
+            const soundKilled = document.getElementById('soundKilled');
+            soundKilled.play();
+            console.log('Played kill sound.');
+        });
+
+        // Буфер для серверных обновлений
+        let serverUpdates = [];
+
+        // Флаг для инициализации дополнительных свойств игрока
+        let isPlayerInitialized = false;
+
+        // Получение обновлений с сервера
+        socket.on('update', (data) => {
+            // console.log('Received update:', data);
+            // Добавляем серверное обновление в буфер
+            serverUpdates.push({
+                players: data.players,
+                bullets: data.bullets,
+                leaderboard: data.leaderboard,
+                timestamp: data.timestamp
+            });
+
+            // Ограничиваем размер буфера
+            if (serverUpdates.length > 100) { // Увеличил размер буфера для плавности
+                serverUpdates.shift();
+            }
+
+            // Обновляем локальные данные
+            players = data.players;
+            bullets = data.bullets;
+
+            if (players[playerId]) {
+                updateStats(players[playerId]);
+
+                // Инициализируем дополнительные свойства игрока один раз
+                if (!isPlayerInitialized) {
+                    players[playerId].lastProcessedInput = 0;
+                    players[playerId].inputQueue = [];
+                    isPlayerInitialized = true;
+                    console.log(`Initialized player ${playerId}`);
+                }
+            }
+
+            updateLeaderboard(data.leaderboard);
+        });
+
+        // Если игрок проиграл
+        const soundGameOver = document.getElementById('soundGameOver');
+        socket.on('gameOver', () => {
+            isGameOver = true;
+            gameOverScreen.style.display = 'flex';
+            gameOverScreen.style.opacity = '1';
+            soundGameOver.play();
+        });
+
+        // Отслеживаем движение мыши
+        canvas.addEventListener('mousemove', (event) => {
+            mousePosition = { x: event.clientX, y: event.clientY };
+        });
+
+        // Отслеживаем нажатия клавиш
+        canvas.addEventListener('mousedown', shootBullet);
+        document.addEventListener('keydown', (event) => {
+            if (event.code === 'Space') {
+                shootBullet();
+            }
+        });
+
+        // Функция стрельбы
+        let lastShotTime = 0; // Время последнего выстрела в мс
+
+        function shootBullet() {
+            if (!players[playerId] || isGameOver) return;
+
+            const currentTime = Date.now(); // Получаем текущее время
+            const timeSinceLastShot = currentTime - lastShotTime;
+            console.log(`Time since last shot: ${timeSinceLastShot} ms`);
+            // Ограничиваем скорость стрельбы
+            if (timeSinceLastShot < 900) { // Ограничение на 900 мс
+                return; // Пропускаем выстрел, если прошло меньше 0.9 сек
+            }
+
+            const player = players[playerId];
+            const angle = Math.atan2(
+                mousePosition.y + camera.y - player.y,
+                mousePosition.x + camera.x - player.x
+            );
+
+            const bullet = {
+                x: player.x,
+                y: player.y,
+                angle,
+                lifetime: BULLET_LIFETIME,
+                owner: playerId,
+            };
+
+            // Отправляем событие выстрела на сервер
+            socket.emit('shoot', bullet);
+            console.log(`Sent shoot event:`, bullet);
+
+            // Воспроизведение звука на основе скорости стрельбы
+            if (timeSinceLastShot < 1500) {
+                document.getElementById('shotSpeed').play();
+            } else {
+                document.getElementById('shotSlow').play();
+            }
+
+            // Обновляем время последнего выстрела
+            lastShotTime = currentTime;
+        }
+
+        // Функция для отрисовки пуль
+        function drawBullets() {
+            ctx.fillStyle = 'black';
+            for (const bullet of bullets) {
+                const relativeX = bullet.x - camera.x;
+                const relativeY = bullet.y - camera.y;
+                ctx.beginPath();
+                ctx.arc(relativeX, relativeY, BULLET_RADIUS, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Основной цикл игры с интерполяцией
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Интерполируем позиции игроков для плавности
+            const now = Date.now();
+            const bufferTime = 100; // Задержка в миллисекундах для буферизации
+            const renderTime = now - bufferTime;
+
+            // Находим два серверных обновления для интерполяции
+            let previousUpdate = null;
+            let nextUpdate = null;
+
+            for (let i = 0; i < serverUpdates.length; i++) {
+                if (serverUpdates[i].timestamp <= renderTime) {
+                    previousUpdate = serverUpdates[i];
+                }
+                if (serverUpdates[i].timestamp > renderTime) {
+                    nextUpdate = serverUpdates[i];
+                    break;
+                }
+            }
+
+            // Если нет достаточно данных для интерполяции, используем последнее обновление
+            if (!previousUpdate || !nextUpdate) {
+                if (serverUpdates.length > 0) {
+                    const latestUpdate = serverUpdates[serverUpdates.length - 1];
+                    previousUpdate = latestUpdate;
+                    nextUpdate = latestUpdate;
+                } else {
+                    // Если нет никаких обновлений, отрисовываем только сетку
+                    drawGrid();
+                    requestAnimationFrame(gameLoop);
+                    return;
+                }
+            }
+
+            const timeDiff = nextUpdate.timestamp - previousUpdate.timestamp;
+            const factor = timeDiff === 0 ? 0 : (renderTime - previousUpdate.timestamp) / timeDiff;
+
+            // Обновляем позиции игроков с интерполяцией
+            for (const id in previousUpdate.players) {
+                if (!nextUpdate.players[id]) continue;
+
+                const prevPlayer = previousUpdate.players[id];
+                const nextPlayer = nextUpdate.players[id];
+
+                // Интерполируем позиции
+                const interpolatedX = prevPlayer.x + (nextPlayer.x - prevPlayer.x) * factor;
+                const interpolatedY = prevPlayer.y + (nextPlayer.y - prevPlayer.y) * factor;
+
+                // Добавляем свойства для интерполяции
+                players[id].renderX = interpolatedX;
+                players[id].renderY = interpolatedY;
+            }
+
+            // Обновляем позиции пуль без интерполяции (можно добавить аналогично)
+            bullets = nextUpdate.bullets;
+
+            if (players[playerId]) {
+                const player = players[playerId];
+                // Обновляем камеру, чтобы следить за игроком
+                camera.x = (player.renderX !== undefined ? player.renderX : player.x) - canvas.width / 2;
+                camera.y = (player.renderY !== undefined ? player.renderY : player.y) - canvas.height / 2;
+
+                // Ограничиваем положение камеры
+                camera.x = Math.max(0, Math.min(camera.x, MAP_SIZE - canvas.width));
+                camera.y = Math.max(0, Math.min(camera.y, MAP_SIZE - canvas.height));
+
+                // Проверка, находится ли курсор над иконкой игрока
+                const playerScreenX = player.renderX - camera.x; // Обычно canvas.width / 2
+                const playerScreenY = player.renderY - camera.y; // Обычно canvas.height / 2
+                const distanceToCursor = Math.sqrt(
+                    Math.pow(mousePosition.x - playerScreenX, 2) +
+                    Math.pow(mousePosition.y - playerScreenY, 2)
+                );
+                isCursorOverPlayer = distanceToCursor <= PLAYER_RADIUS;
+
+                // Логирование для отладки
+                console.log(`Distance to cursor: ${distanceToCursor}`);
+                console.log(`isCursorOverPlayer: ${isCursorOverPlayer}`);
+            }
+
+            // Отрисовываем элементы игры
+            drawGrid();
+            drawPlayers();
+            drawBullets();
+
+            // Отправляем события перемещения или остановки
+            if (players[playerId]) {
+                if (isCursorOverPlayer) {
+                    // Если курсор над игроком, отправляем событие остановки
+                    socket.emit('stop');
+                    console.log('Sent stop event.');
+                } else {
+                    // Иначе, отправляем событие на движение
+                    handleMovement();
+                }
+            }
+
+            // Рекурсивный вызов для продолжения цикла игры
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Функция для обработки и отправки перемещения
+        function handleMovement() {
+            if (players[playerId] && !isGameOver) {
+                const player = players[playerId];
+                const dx = mousePosition.x + camera.x - player.x;
+                const dy = mousePosition.y + camera.y - player.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance > PLAYER_RADIUS) {
+                    const angle = Math.atan2(dy, dx);
+
+                    // Отправляем угол направления на сервер
+                    socket.emit('move', { angle });
+                    console.log(`Sent move event: angle=${angle}`);
+                }
+            }
+        }
+
+        // Функция для отрисовки сетки и красных краёв карты
+        function drawGrid() {
+            const gridSize = 50;
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.lineWidth = 1;
+
+            // Отрисовка горизонтальных линий
+            for (let y = -camera.y % gridSize; y < canvas.height; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+
+            // Отрисовка вертикальных линий
+            for (let x = -camera.x % gridSize; x < canvas.width; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+
+            // Отрисовка красных краёв карты
+            const edgeThickness = 100; // Толщина красной границы в пикселях
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.5)'; // Полупрозрачный красный
+
+            // Верхний край
+            if (camera.y < edgeThickness) {
+                ctx.fillRect(0, 0, canvas.width, edgeThickness - camera.y);
+            }
+
+            // Нижний край
+            if (camera.y + canvas.height > MAP_SIZE - edgeThickness) {
+                ctx.fillRect(0, canvas.height - ((camera.y + canvas.height) - (MAP_SIZE - edgeThickness)), canvas.width, ((camera.y + canvas.height) - (MAP_SIZE - edgeThickness)));
+            }
+
+            // Левый край
+            if (camera.x < edgeThickness) {
+                ctx.fillRect(0, 0, edgeThickness - camera.x, canvas.height);
+            }
+
+            // Правый край
+            if (camera.x + canvas.width > MAP_SIZE - edgeThickness) {
+                ctx.fillRect(canvas.width - ((camera.x + canvas.width) - (MAP_SIZE - edgeThickness)), 0, ((camera.x + canvas.width) - (MAP_SIZE - edgeThickness)), canvas.height);
+            }
+        }
+
+        // Запуск основного цикла игры
+        gameLoop();
+
+        // Обработка изменения размера окна
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+    </script>
+</body>
+</html>
